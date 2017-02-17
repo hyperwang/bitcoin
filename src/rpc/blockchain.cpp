@@ -956,6 +956,51 @@ UniValue getblockchaininfo(const UniValue& params, bool fHelp)
     return obj;
 }
 
+UniValue gettinyblocktxs(const UniValue& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 3)
+        throw runtime_error("gettinyblocktxs \"blockhash\" \"txIdBytes\" \"txIds\"");
+
+    std::string strHash = params[0].get_str();
+    int txIdLen = atoi(params[1].get_str()) * 2;
+    std::string txIdsStr = params[2].get_str();
+    uint256 hash(uint256S(strHash));
+
+    if (mapBlockIndex.count(hash) != 0)
+        throw runtime_error("block already exists");
+
+    std::set<std::string> tinyIds;
+    for (int i = 0; i < (int)txIdsStr.length() / txIdLen; i++) {
+       tinyIds.insert(txIdsStr.substr(i * txIdLen, txIdLen));
+    }
+
+    vector<uint256> vtxid;
+    mempool.queryHashes(vtxid);
+
+    UniValue txs(UniValue::VARR);
+    BOOST_FOREACH(const uint256& hash, vtxid)
+    {
+        std::string tinyId = hash.ToString().substr(0, txIdLen);
+        if (tinyIds.count(tinyId) == 0) {
+            continue;
+        }
+        CTransaction tx;
+        uint256 hashBlock;
+        if (!GetTransaction(hash, tx, Params().GetConsensus(), hashBlock, true))
+             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No information available about transaction (haobtc)");
+
+        CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+        ssTx << tx;
+
+        UniValue in(UniValue::VOBJ);
+        in.push_back(Pair("hash", hash.ToString()));
+        in.push_back(Pair("data", HexStr(ssTx.begin(), ssTx.end())));
+
+        txs.push_back(in);
+    }
+    return txs;
+}
+
 /** Comparison function for sorting the getchaintips heads.  */
 struct CompareBlocksByHeight
 {
@@ -1007,7 +1052,7 @@ UniValue getchaintips(const UniValue& params, bool fHelp)
     LOCK(cs_main);
 
     /*
-     * Idea:  the set of chain tips is chainActive.tip, plus orphan blocks which do not have another orphan building off of them. 
+     * Idea:  the set of chain tips is chainActive.tip, plus orphan blocks which do not have another orphan building off of them.
      * Algorithm:
      *  - Make one pass through mapBlockIndex, picking out the orphan blocks, and also storing a set of the orphan block's pprev pointers.
      *  - Iterate through the orphan blocks. If the block isn't pointed to by another orphan, it is a chain tip.
@@ -1203,6 +1248,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "gettxout",               &gettxout,               true  },
     { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        true  },
     { "blockchain",         "verifychain",            &verifychain,            true  },
+    { "blockchain",         "gettinyblocktxs",        &gettinyblocktxs,        true  },
 
     /* Not shown in help */
     { "hidden",             "invalidateblock",        &invalidateblock,        true  },

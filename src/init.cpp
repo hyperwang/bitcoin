@@ -506,8 +506,20 @@ static void BlockNotifyCallback(bool initialSync, const CBlockIndex *pBlockIndex
 
     std::string strCmd = GetArg("-blocknotify", "");
 
-    boost::replace_all(strCmd, "%s", pBlockIndex->GetBlockHash().GetHex());
-    boost::thread t(runCommand, strCmd); // thread runs free
+    string file = strCmd + "/" + chainActive.Tip()->GetBlockHash().GetHex();
+    FILE *f = fopen(file.c_str(), "w");
+    if (!f) {
+        LogPrintf("open file fail: %s\n", file);
+    } else {
+        CBlockIndex* pblockindex = chainActive.Tip();
+        CBlock block;
+        ReadBlockFromDisk(block, pblockindex, Params().GetConsensus());
+        CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
+        ssBlock << block;
+        std::string strHex = HexStr(ssBlock.begin(), ssBlock.end());
+        fprintf(f, "%s", strHex.c_str());
+        fclose(f);
+    }
 }
 
 struct CImportingNow
