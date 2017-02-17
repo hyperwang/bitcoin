@@ -332,6 +332,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
             "\nArguments:\n"
             "1. TemplateRequest          (json object, optional) A json object in the following spec\n"
             "     {\n"
+            "       \"notxs\": boolean,      (bool, optional) if use empty block, no txs beside coinbase tx\n"
             "       \"mode\":\"template\"    (string, optional) This must be set to \"template\", \"proposal\" (see BIP 23), or omitted\n"
             "       \"capabilities\":[     (array, optional) A list of strings\n"
             "           \"support\"          (string) client side supported feature, 'longpoll', 'coinbasetxn', 'coinbasevalue', 'proposal', 'serverlist', 'workid'\n"
@@ -398,6 +399,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
     LOCK(cs_main);
 
     std::string strMode = "template";
+    bool notxs = false;
     UniValue lpval = NullUniValue;
     std::set<std::string> setClientRules;
     int64_t nMaxVersionPreVB = -1;
@@ -405,6 +407,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
     {
         const UniValue& oparam = params[0].get_obj();
         const UniValue& modeval = find_value(oparam, "mode");
+        const UniValue& notxsval = find_value(oparam, "notxs");
         if (modeval.isStr())
             strMode = modeval.get_str();
         else if (modeval.isNull())
@@ -413,6 +416,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
         }
         else
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
+        if (notxsval.type() == UniValue::VBOOL) { notxs = notxsval.get_bool(); }
         lpval = find_value(oparam, "longpollid");
 
         if (strMode == "proposal")
@@ -561,38 +565,40 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
     UniValue transactions(UniValue::VARR);
     map<uint256, int64_t> setTxIndex;
     int i = 0;
-    BOOST_FOREACH (CTransaction& tx, pblock->vtx) {
-        uint256 txHash = tx.GetHash();
-        setTxIndex[txHash] = i++;
+    if (notxs == false) {
+        BOOST_FOREACH (CTransaction& tx, pblock->vtx) {
+            uint256 txHash = tx.GetHash();
+            setTxIndex[txHash] = i++;
 
-        if (tx.IsCoinBase())
-            continue;
+            if (tx.IsCoinBase())
+                continue;
 
-        UniValue entry(UniValue::VOBJ);
+            UniValue entry(UniValue::VOBJ);
 
-        entry.push_back(Pair("data", EncodeHexTx(tx)));
-        entry.push_back(Pair("txid", txHash.GetHex()));
-        entry.push_back(Pair("hash", tx.GetWitnessHash().GetHex()));
+            entry.push_back(Pair("data", EncodeHexTx(tx)));
+            entry.push_back(Pair("txid", txHash.GetHex()));
+            entry.push_back(Pair("hash", tx.GetWitnessHash().GetHex()));
 
-        UniValue deps(UniValue::VARR);
-        BOOST_FOREACH (const CTxIn &in, tx.vin)
-        {
-            if (setTxIndex.count(in.prevout.hash))
-                deps.push_back(setTxIndex[in.prevout.hash]);
+            UniValue deps(UniValue::VARR);
+            BOOST_FOREACH (const CTxIn &in, tx.vin)
+            {
+                if (setTxIndex.count(in.prevout.hash))
+                    deps.push_back(setTxIndex[in.prevout.hash]);
+            }
+            entry.push_back(Pair("depends", deps));
+
+            int index_in_template = i - 1;
+            entry.push_back(Pair("fee", pblocktemplate->vTxFees[index_in_template]));
+            int64_t nTxSigOps = pblocktemplate->vTxSigOpsCost[index_in_template];
+            if (fPreSegWit) {
+                assert(nTxSigOps % WITNESS_SCALE_FACTOR == 0);
+                nTxSigOps /= WITNESS_SCALE_FACTOR;
+            }
+            entry.push_back(Pair("sigops", nTxSigOps));
+            entry.push_back(Pair("weight", GetTransactionWeight(tx)));
+
+            transactions.push_back(entry);
         }
-        entry.push_back(Pair("depends", deps));
-
-        int index_in_template = i - 1;
-        entry.push_back(Pair("fee", pblocktemplate->vTxFees[index_in_template]));
-        int64_t nTxSigOps = pblocktemplate->vTxSigOpsCost[index_in_template];
-        if (fPreSegWit) {
-            assert(nTxSigOps % WITNESS_SCALE_FACTOR == 0);
-            nTxSigOps /= WITNESS_SCALE_FACTOR;
-        }
-        entry.push_back(Pair("sigops", nTxSigOps));
-        entry.push_back(Pair("weight", GetTransactionWeight(tx)));
-
-        transactions.push_back(entry);
     }
 
     UniValue aux(UniValue::VOBJ);
@@ -666,7 +672,12 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
     result.push_back(Pair("previousblockhash", pblock->hashPrevBlock.GetHex()));
     result.push_back(Pair("transactions", transactions));
     result.push_back(Pair("coinbaseaux", aux));
-    result.push_back(Pair("coinbasevalue", (int64_t)pblock->vtx[0].vout[0].nValue));
+    if (notxs == false) {
+        result.push_back(Pair("coinbasevalue", (int64_t)pblock->vtx[0].vout[0].nValue));
+    } else {
+        const CChainParams& chainparams = Params();
+        result.push_back(Pair("coinbasevalue", (int64_t)GetBlockSubsidy(pindexPrev->nHeight+1, chainparams.GetConsensus())));
+    }
     result.push_back(Pair("longpollid", chainActive.Tip()->GetBlockHash().GetHex() + i64tostr(nTransactionsUpdatedLast)));
     result.push_back(Pair("target", hashTarget.GetHex()));
     result.push_back(Pair("mintime", (int64_t)pindexPrev->GetMedianTimePast()+1));
